@@ -1,1518 +1,634 @@
 ---
 layout:     post
-title:      ReactiveCocoa 进阶
-subtitle:   函数式编程框架 ReactiveCocoa 进阶
-date:       2017-01-06
+title:      Mypeloton 源码解析：日志部分
+subtitle:   Mypeloton 日志部分的原理分析，关键代码解析
+date:       2022-7-27
 author:     BY
-header-img: img/post-bg-ios9-web.jpg
+header-img: img/post-bg-os-metro.jpg
 catalog: true
 tags:
-    - iOS
-    - ReactiveCocoa
-    - 函数式编程
-    - 开源框架
+    - 内存数据库
+    - C++
 ---
-# 前言
 
->在[上篇文章](http://qiubaiying.github.io/2016/12/26/ReactiveCocoa-基础/)中介绍了**ReactiveCocoa**的基础知识,接下来我们来深入介绍**ReactiveCocoa**及其在**MVVM**中的用法。
+> 此博客是对开源数据库Peloton中日志系统的源码分析
 
+ [peloton源码](https://github.com/vittvolt/15721-peloton)
 
-![ReactiveCocoa进阶思维导图](https://ww3.sinaimg.cn/large/006y8lVagw1fbgye3re5xj30je0iomz8.jpg)
-# 常见操作方法介绍
 
 
-#### 操作须知
-
-所有的信号（RACSignal）都可以进行操作处理，因为所有操作方法都定义在RACStream.h中，因此只要继承RACStream就有了操作处理方法。
-#### 操作思想
-
-运用的是Hook（钩子）思想，Hook是一种用于改变API(应用程序编程接口：方法)执行结果的技术.
-
-Hook用处：截获API调用的技术。
-
-有关Hook的知识可以看我的这篇博客[《Objective-C Runtime 的一些基本使用》](http://www.jianshu.com/p/ff114e69cc0a)中的 *更换代码的实现方法* 一节,
-
-Hook原理：在每次调用一个API返回结果之前，先执行你自己的方法，改变结果的输出。
-
-#### 操作方法
-
-#### **bind**（绑定）- ReactiveCocoa核心方法
-
-**ReactiveCocoa** 操作的核心方法是 **bind**（绑定）,而且也是RAC中核心开发方式。之前的开发方式是赋值，而用RAC开发，应该把重心放在绑定，也就是可以在创建一个对象的时候，就绑定好以后想要做的事情，而不是等赋值之后在去做事情。
-
-列如，把数据展示到控件上，之前都是重写控件的 `setModel` 方法，用RAC就可以在一开始创建控件的时候，就绑定好数据。
-
-- **作用**
-
-	RAC底层都是调用**bind**， 在开发中很少直接使用 **bind** 方法，**bind**属于RAC中的底层方法，我们只需要调用封装好的方法，**bind**用作了解即可.
-
-- **bind方法使用步骤**
-     1. 传入一个返回值 `RACStreamBindBlock` 的 block。
-     2. 描述一个 `RACStreamBindBlock` 类型的 `bindBlock`作为block的返回值。
-     3. 描述一个返回结果的信号，作为 `bindBlock` 的返回值。
-     
-     注意：在bindBlock中做信号结果的处理。
-- 	**bind方法参数**
-	
-	**RACStreamBindBlock**:
-`typedef RACStream * (^RACStreamBindBlock)(id value, BOOL *stop);`
-
-     `参数一(value)`:表示接收到信号的原始值，还没做处理
-     
-     `参数二(*stop)`:用来控制绑定Block，如果*stop = yes,那么就会结束绑定。
-     
-     `返回值`：信号，做好处理，在通过这个信号返回出去，一般使用 `RACReturnSignal`,需要手动导入头文件`RACReturnSignal.h`
-
-- **使用**
-
-	假设想监听文本框的内容，并且在每次输出结果的时候，都在文本框的内容拼接一段文字“输出：”
-
-	- 使用封装好的方法：在返回结果后，拼接。
-
-		```
-		[_textField.rac_textSignal subscribeNext:^(id x) {
-		
-			// 在返回结果后，拼接 输出：
-			NSLog(@"输出:%@",x);
-		
-		}];
-		```
-
-
-	- 方式二:，使用RAC中 `bind` 方法做处理，在返回结果前，拼接。
-	  
-		这里需要手动导入`#import <ReactiveCocoa/RACReturnSignal.h>`，才能使用`RACReturnSignal`
-
-		```	
-		[[_textField.rac_textSignal bind:^RACStreamBindBlock{
-		   // 什么时候调用:
-		   // block作用:表示绑定了一个信号.
-		
-		   return ^RACStream *(id value, BOOL *stop){
-		
-		       // 什么时候调用block:当信号有新的值发出，就会来到这个block。
-		
-		       // block作用:做返回值的处理
-		
-		       // 做好处理，在返回结果前，拼接 输出:
-		       return [RACReturnSignal return:[NSString stringWithFormat:@"输出:%@",value]];
-		   };
-		
-		}] subscribeNext:^(id x) {
-		
-		   NSLog(@"%@",x);
-		
-		}];
-
-		```
-
-- **底层实现**
-     1. 源信号调用bind,会重新创建一个绑定信号。
-     2. 当绑定信号被订阅，就会调用绑定信号中的 `didSubscribe` ，生成一个 `bindingBlock` 。
-     3. 当源信号有内容发出，就会把内容传递到 `bindingBlock` 处理，调用`bindingBlock(value,stop)`
-     4. 调用`bindingBlock(value,stop)`，会返回一个内容处理完成的信号`RACReturnSignal`。
-     5. 订阅`RACReturnSignal`，就会拿到绑定信号的订阅者，把处理完成的信号内容发送出来。
-    
-     注意:不同订阅者，保存不同的nextBlock，看源码的时候，一定要看清楚订阅者是哪个。
-
-#### 映射
-
-映射主要用这两个方法实现：**flattenMap**,**Map**,用于把源信号内容映射成新的内容。
-
-###### flattenMap
-
-- **作用**
-
-	把源信号的内容映射成一个新的信号，信号可以是任意类型
-
-- **使用步骤**
-
-     1. 传入一个block，block类型是返回值`RACStream`，参数value
-     2. 参数value就是源信号的内容，拿到源信号的内容做处理
-     3. 包装成`RACReturnSignal`信号，返回出去。
-
-
-
-- **使用**
-
-	监听文本框的内容改变，把结构重新映射成一个新值.
-	
-	```
-	[[_textField.rac_textSignal flattenMap:^RACStream *(id value) {
-        
-        // block调用时机：信号源发出的时候
-        
-        // block作用：改变信号的内容
-        
-        // 返回RACReturnSignal
-        return [RACReturnSignal return:[NSString stringWithFormat:@"信号内容：%@", value]];
-        
-    }] subscribeNext:^(id x) {
-        
-        NSLog(@"%@", x);
-    }];
-    ```
-- **底层实现**
-
-     0. **flattenMap**内部调用 `bind` 方法实现的,**flattenMap**中block的返回值，会作为bind中bindBlock的返回值。
-     1. 当订阅绑定信号，就会生成 `bindBlock`。
-     2. 当源信号发送内容，就会调用` bindBlock(value, *stop)`
-     3. 调用`bindBlock`，内部就会调用 **flattenMap** 的 bloc k，**flattenMap** 的block作用：就是把处理好的数据包装成信号。
-     4. 返回的信号最终会作为 `bindBlock` 中的返回信号，当做 `bindBlock` 的返回信号。
-     5. 订阅 `bindBlock` 的返回信号，就会拿到绑定信号的订阅者，把处理完成的信号内容发送出来。
-	
-###### Map
-
-- **作用**
- 
-	把源信号的值映射成一个新的值
-
-	
-- **使用步骤**
-     1. 传入一个block,类型是返回对象，参数是 `value`
-     2. `value`就是源信号的内容，直接拿到源信号的内容做处理
-     3. 把处理好的内容，直接返回就好了，不用包装成信号，返回的值，就是映射的值。
-    
-- **使用**
-
-	监听文本框的内容改变，把结构重新映射成一个新值.
-     
-    ```
-	[[_textField.rac_textSignal map:^id(id value) {
-       
-       // 拼接完后，返回对象
-        return [NSString stringWithFormat:@"信号内容: %@", value];
-        
-    }] subscribeNext:^(id x) {
-        
-        NSLog(@"%@", x);
-    }];
-	```
-- **底层实现**:
-     0. Map底层其实是调用 `flatternMa`p,`Map` 中block中的返回的值会作为 `flatternMap` 中block中的值
-     1. 当订阅绑定信号，就会生成 `bindBlock` 
-     3. 当源信号发送内容，就会调用 `bindBlock(value, *stop)`
-     4. 调用 `bindBlock` ，内部就会调用 `flattenMap的block`
-     5. `flattenMap的block` 内部会调用 `Map` 中的block，把 `Map` 中的block返回的内容包装成返回的信号
-     5. 返回的信号最终会作为 `bindBlock` 中的返回信号，当做 `bindBlock` 的返回信号
-     6. 订阅 `bindBlock` 的返回信号，就会拿到绑定信号的订阅者，把处理完成的信号内容发送出来。
-
-###### FlatternMap 和 Map 的区别
--  **FlatternMap** 中的Block **返回信号**。 
-2. **Map** 中的Block **返回对象**。
-3. 开发中，如果信号发出的值 **不是信号** ，映射一般使用 `Map`
-4. 如果信号发出的值 **是信号**，映射一般使用 `FlatternMap`。
-
-
-
-- `signalOfsignals`用 **FlatternMap**
-
-	```
-    // 创建信号中的信号
-    RACSubject *signalOfsignals = [RACSubject subject];
-    RACSubject *signal = [RACSubject subject];
-
-    [[signalOfsignals flattenMap:^RACStream *(id value) {
-
-     // 当signalOfsignals的signals发出信号才会调用
-
-        return value;
-
-    }] subscribeNext:^(id x) {
-
-        // 只有signalOfsignals的signal发出信号才会调用，因为内部订阅了bindBlock中返回的信号，也就是flattenMap返回的信号。
-        // 也就是flattenMap返回的信号发出内容，才会调用。
-
-        NSLog(@"signalOfsignals：%@",x);
-    }];
-
-    // 信号的信号发送信号
-    [signalOfsignals sendNext:signal];
-
-    // 信号发送内容
-    [signal sendNext:@"hi"];
-	
-	```
-	
-#### 组合
-
-组合就是将多个信号按照某种规则进行拼接，合成新的信号。
-
-###### concat
-
-- **作用** 
-
-	按**顺序拼接**信号，当多个信号发出的时候，有顺序的接收信号。
-- **底层实现**
-     1. 当拼接信号被订阅，就会调用拼接信号的didSubscribe
-     2. didSubscribe中，会先订阅第一个源信号（signalA）
-     3. 会执行第一个源信号（signalA）的didSubscribe
-     4. 第一个源信号（signalA）didSubscribe中发送值，就会调用第一个源信号（signalA）订阅者的nextBlock,通过拼接信号的订阅者把值发送出来.
-     5. 第一个源信号（signalA）didSubscribe中发送完成，就会调用第一个源信号（signalA）订阅者的completedBlock,订阅第二个源信号（signalB）这时候才激活（signalB）。
-     6. 订阅第二个源信号（signalB）,执行第二个源信号（signalB）的didSubscribe
-     7. 第二个源信号（signalA）didSubscribe中发送值,就会通过拼接信号的订阅者把值发送出来.
-- **使用步骤**
-
-	1. 使用`concat:`拼接信号
-	2. 订阅拼接信号，内部会自动按拼接顺序订阅信号
-- **使用**
-
-	拼接信号 `signalA`、 `signalB`、 `signalC`
-	
-	```
-	RACSignal *signalA = [RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-        [subscriber sendNext:@"Hello"];
-        
-        [subscriber sendCompleted];
-        
-        return nil;
-    }];
-    
-    RACSignal *signalB = [RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-        [subscriber sendNext:@"World"];
-        
-        [subscriber sendCompleted];
-        
-        return nil;
-    }];
-    
-    RACSignal *signalC = [RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-        [subscriber sendNext:@"!"];
-        
-        [subscriber sendCompleted];
-        
-        return nil;
-    }];
-    
-    // 拼接 A B, 把signalA拼接到signalB后，signalA发送完成，signalB才会被激活。
-    RACSignal *concatSignalAB = [signalA concat:signalB];
-    
-    // A B + C
-    RACSignal *concatSignalABC = [concatSignalAB concat:signalC];
-    
-    
-    // 订阅拼接的信号, 内部会按顺序订阅 A->B->C
-    // 注意：第一个信号必须发送完成，第二个信号才会被激活...
-    [concatSignalABC subscribeNext:^(id x) {
-        
-        NSLog(@"%@", x);
-    }];
-	```
-
-######  then
-- **作用** 
-
-	用于连接两个信号，当第一个信号完成，才会连接then返回的信号。
-- **底层实现**
-	
-	1. 先过滤掉之前的信号发出的值
-	2. 使用concat连接then返回的信号
-	
-- **使用**
-
-	```
-   [[[RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-      
-      [subscriber sendNext:@1];
-      
-      [subscriber sendCompleted];
-      
-      return nil;
-      
-    }] then:^RACSignal *{
-      
-      	return [RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-          
-          [subscriber sendNext:@2];
-          
-          return nil;
-      }];
-      
-    }] subscribeNext:^(id x) {
-      
-      // 只能接收到第二个信号的值，也就是then返回信号的值
-      NSLog(@"%@", x);
-      
-    }];
-    
-    ///
-    输出：2
-	```
-- **注意**
-
-	注意使用`then`，之前信号的值会被忽略掉.
-
-###### merge
-- **作用** 
-	
-	合并信号,任何一个信号发送数据，都能监听到.
-- **底层实现**
-
-     1. 合并信号被订阅的时候，就会遍历所有信号，并且发出这些信号。
-     2. 每发出一个信号，这个信号就会被订阅
-     3. 也就是合并信号一被订阅，就会订阅里面所有的信号。
-     4. 只要有一个信号被发出就会被监听。
-- **使用**
-
-	```
-	RACSignal *signalA = [RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-        [subscriber sendNext:@"A"];
-        
-        return nil;
-    }];
-
-    RACSignal *signalB = [RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-        [subscriber sendNext:@"B"];
-        
-        return nil;
-    }];
-
-    // 合并信号, 任何一个信号发送数据，都能监听到
-    RACSignal *mergeSianl = [signalA merge:signalB];
-
-    [mergeSianl subscribeNext:^(id x) {
-        
-        NSLog(@"%@", x);
-    }];
-    
-    // 输出
-	2017-01-03 13:29:08.013 ReactiveCocoa进阶[3627:718315] A
-	2017-01-03 13:29:08.014 ReactiveCocoa进阶[3627:718315] B
-
-    
-	```
-
-###### zip
-
-- **作用** 
-	
-	把两个信号压缩成一个信号，只有当两个信号 **同时** 发出信号内容时，并且把两个信号的内容合并成一个元组，才会触发压缩流的next事件。
-- **底层实现**
-	
-	1. 定义压缩信号，内部就会自动订阅signalA，signalB
-	2. 每当signalA或者signalB发出信号，就会判断signalA，signalB有没有发出个信号，有就会把每个信号 第一次 发出的值包装成元组发出
-	     
-- **使用**
-
-	```
-	RACSignal *signalA = [RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-        [subscriber sendNext:@"A1"];
-        [subscriber sendNext:@"A2"];
-        
-        return nil;
-    }];
-    
-    RACSignal *signalB = [RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-        [subscriber sendNext:@"B1"];
-        [subscriber sendNext:@"B2"];
-        [subscriber sendNext:@"B3"];
-        
-        return nil;
-    }];
-    
-    RACSignal *zipSignal = [signalA zipWith:signalB];
-    
-    [zipSignal subscribeNext:^(id x) {
-        
-        NSLog(@"%@", x);
-    }];
-	
-	// 输出
-	2017-01-03 13:48:09.234 ReactiveCocoa进阶[3997:789720] zipWith: <RACTuple: 0x600000004df0> (
-    A1,
-    B1
-	)
-	2017-01-03 13:48:09.234 ReactiveCocoa进阶[3997:789720] zipWith: <RACTuple: 0x608000003410> (
-    A2,
-    B2
-	)
-	```
-	
-	
-###### combineLatest
-- **作用** 
-	
-	将多个信号合并起来，并且拿到各个信号最后一个值,必须每个合并的signal至少都有过一次sendNext，才会触发合并的信号。
-
-- **底层实现**
-	
- 	1. 当组合信号被订阅，内部会自动订阅signalA，signalB,必须两个信号都发出内容，才会被触发。
- 	2. 并且把两个信号的 最后一次 发送的值组合成元组发出。
-	     
-- **使用**
-
-	```
-	RACSignal *signalA = [RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-        [subscriber sendNext:@"A1"];
-        [subscriber sendNext:@"A2"];
-        
-        return nil;
-    }];
-    
-    RACSignal *signalB = [RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-        [subscriber sendNext:@"B1"];
-        [subscriber sendNext:@"B2"];
-        [subscriber sendNext:@"B3"];
-        
-        return nil;
-    }];
-    
-    RACSignal *combineSianal = [signalA combineLatestWith:signalB];
-    
-    [combineSianal subscribeNext:^(id x) {
-        
-        NSLog(@"combineLatest:%@", x);
-    }];
-	
-	// 输出
-	2017-01-03 13:48:09.235 ReactiveCocoa进阶[3997:789720] combineLatest:<RACTuple: 0x60800000e150> (
-    A2,
-    B1
-	)
-	2017-01-03 13:48:09.235 ReactiveCocoa进阶[3997:789720] combineLatest:<RACTuple: 0x600000004db0> (
-    A2,
-    B2
-	)
-	2017-01-03 13:48:09.236 ReactiveCocoa进阶[3997:789720] combineLatest:<RACTuple: 0x60800000e180> (
-    A2,
-    B3
-	)
-	```
-	
-- **注意**
-
-	**combineLatest**与**zip**用法相似，必须每个合并的signal至少都有过一次sendNext，才会触发合并的信号。
-	
-	区别看下图：
-	
-	![](https://ww2.sinaimg.cn/large/006y8lVagw1fbdf6cyez6j30id0kkabf.jpg)
-
-
-###### reduce   
-
-- **作用** 
-	
-	把信号发出元组的值聚合成一个值
-- **底层实现**
-	
- 	1. 订阅聚合信号，
- 	2. 每次有内容发出，就会执行reduceblcok，把信号内容转换成reduceblcok返回的值。
-	     
-- **使用**
-
-     常见的用法，（先组合在聚合）`combineLatest:(id<NSFastEnumeration>)signals reduce:(id (^)())reduceBlock`
-     
-     reduce中的block简介:
-     
-     reduceblcok中的参数，有多少信号组合，reduceblcok就有多少参数，每个参数就是之前信号发出的内容
-     reduceblcok的返回值：聚合信号之后的内容。
-
-
-
-	```
-	    RACSignal *signalA = [RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-        [subscriber sendNext:@"A1"];
-        [subscriber sendNext:@"A2"];
-        
-        return nil;
-    }];
-    
-    RACSignal *signalB = [RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-        [subscriber sendNext:@"B1"];
-        [subscriber sendNext:@"B2"];
-        [subscriber sendNext:@"B3"];
-        
-        return nil;
-    }];
-    
-    
-    RACSignal *reduceSignal = [RACSignal combineLatest:@[signalA, signalB] reduce:^id(NSString *str1, NSString *str2){
-        
-        return [NSString stringWithFormat:@"%@ %@", str1, str2];
-    }];
-    
-    [reduceSignal subscribeNext:^(id x) {
-        
-        NSLog(@"%@", x);
-    }];
-    
-    // 输出
-    2017-01-03 15:42:41.803 ReactiveCocoa进阶[4248:1264674] A2 B1
-	2017-01-03 15:42:41.803 ReactiveCocoa进阶[4248:1264674] A2 B2
-	2017-01-03 15:42:41.803 ReactiveCocoa进阶[4248:1264674] A2 B3
-    
-	```
-	
-#### 过滤
-
-过滤就是过滤信号中的 特定值 ，或者过滤指定 发送次数 的信号。
-
-###### filter
-
-- **作用**
-
-	过滤信号，使用它可以获取满足条件的信号.
-	
-	block的返回值是Bool值，返回`NO`则过滤该信号
-	
-- **使用**
-
-	```
-	// 过滤:
-	// 每次信号发出，会先执行过滤条件判断.
-	[[_textField.rac_textSignal filter:^BOOL(NSString *value) {
-        
-        NSLog(@"原信号: %@", value);
-
-        // 过滤 长度 <= 3 的信号
-        return value.length > 3;
-        
-    }] subscribeNext:^(id x) {
-        
-        NSLog(@"长度大于3的信号：%@", x);
-    }];
-    
-    // 在_textField中输出12345
-	// 输出
-	2017-01-03 16:36:54.938 ReactiveCocoa进阶[4714:1552910] 原信号: 1
-	2017-01-03 16:36:55.383 ReactiveCocoa进阶[4714:1552910] 原信号: 12
-	2017-01-03 16:36:55.706 ReactiveCocoa进阶[4714:1552910] 原信号: 123
-	2017-01-03 16:36:56.842 ReactiveCocoa进阶[4714:1552910] 原信号: 1234
-	2017-01-03 16:36:56.842 ReactiveCocoa进阶[4714:1552910] 长度大于3的信号：1234
-	2017-01-03 16:36:58.350 ReactiveCocoa进阶[4714:1552910] 原信号: 12345
-	2017-01-03 16:36:58.351 ReactiveCocoa进阶[4714:1552910] 长度大于3的信号：12345
-	```
-	
-###### ignore
-
-- **作用**
-
-	忽略某些信号.
-	
-- **使用**
-
-- **作用**
-
-	忽略某些值的信号.
-	
-	底层调用了 `filter` 与 过滤值进行比较，若相等返回则 `NO`
-	
-- **使用**
-
-	```
-  	// 内部调用filter过滤，忽略掉字符为 @“1”的值
-[[_textField.rac_textSignal ignore:@"1"] subscribeNext:^(id x) {
-
- 	 NSLog(@"%@",x);
-}];
-
-
-	```
-
-###### distinctUntilChanged
-
-- **作用**
-
-	当上一次的值和当前的值有明显的变化就会发出信号，否则会被忽略掉。
-	
-- **使用**
-
-	```
-	[[_textField.rac_textSignal distinctUntilChanged] subscribeNext:^(id x) {
-        
-        NSLog(@"%@",x);
-    }];
-	```
-	
-###### skip	
-
-- **作用**
-
-	跳过 **第N次** 的发送的信号.
-	
-- **使用**
-	
-	```
-// 表示输入第一次，不会被监听到，跳过第一次发出的信号
-[[_textField.rac_textSignal skip:1] subscribeNext:^(id x) {
-
-   NSLog(@"%@",x);
-}];
-	```
-
-
-
-##### take
-- **作用**
-
-	取 **前N次** 的发送的信号.
-- **使用**
-
-	```
-	RACSubject *subject = [RACSubject subject] ;
-    
-    // 取 前两次 发送的信号
-    [[subject take:2] subscribeNext:^(id x) {
-        
-        NSLog(@"%@", x);
-    }];
-    
-    [subject sendNext:@1];
-    [subject sendNext:@2];
-    [subject sendNext:@3];
-    
-    // 输出
-	2017-01-03 17:35:54.566 ReactiveCocoa进阶[4969:1677908] 1
-	2017-01-03 17:35:54.567 ReactiveCocoa进阶[4969:1677908] 2
-	```
-
-###### takeLast
-
-- **作用**
-
-	取 **最后N次** 的发送的信号
-	
-	前提条件，订阅者必须调用完成 `sendCompleted`，因为只有完成，就知道总共有多少信号.
-	
-- **使用**	
-
-	```
-	RACSubject *subject = [RACSubject subject] ;
-    
-    // 取 后两次 发送的信号
-    [[subject takeLast:2] subscribeNext:^(id x) {
-        
-        NSLog(@"%@", x);
-    }];
-    
-    [subject sendNext:@1];
-    [subject sendNext:@2];
-    [subject sendNext:@3];
-    
-    // 必须 跳用完成
-    [subject sendCompleted];
-	```
-
-###### takeUntil
-
-- **作用**
-
-	获取信号直到某个信号执行完成
-- **使用**	
-
-	```
-	// 监听文本框的改变直到当前对象被销毁
-[_textField.rac_textSignal takeUntil:self.rac_willDeallocSignal];
-	```
-	
-###### switchToLatest
-- **作用**
-
-	用于signalOfSignals（信号的信号），有时候信号也会发出信号，会在signalOfSignals中，获取signalOfSignals发送的最新信号。
-	
-- **注意**
-
-	switchToLatest：只能用于信号中的信号
-
-- **使用**	
-
-	```
-	RACSubject *signalOfSignals = [RACSubject subject];
-    RACSubject *signal = [RACSubject subject];
-    
-    // 获取信号中信号最近发出信号，订阅最近发出的信号。
-    [signalOfSignals.switchToLatest subscribeNext:^(id x) {
-        
-        NSLog(@"%@", x);
-    }];
-    
-    [signalOfSignals sendNext:signal];
-    [signal sendNext:@1];
-	```
-
-#### 秩序
-
-秩序包括 `doNext` 和 `doCompleted` 这两个方法，主要是在 执行`sendNext` 或者 `sendCompleted`之前，先执行这些方法中Block。
-
-###### doNext 
-	
-执行`sendNext`之前，会先执行这个`doNext`的 Block
-
-###### doCompleted
-
-执行`sendCompleted`之前，会先执行这`doCompleted`的`Block`
-
-```
-[[[[RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-    
-    [subscriber sendNext:@"hi"];
-    
-    [subscriber sendCompleted];
-    
-    return nil;
-    
-}] doNext:^(id x) {
-    
-    // 执行 [subscriber sendNext:@"hi"] 之前会调用这个 Block
-    NSLog(@"doNext");
-    
-}] doCompleted:^{
-    
-    // 执行 [subscriber sendCompleted] 之前会调用这 Block
-    NSLog(@"doCompleted");
-}] subscribeNext:^(id x) {
-    
-    NSLog(@"%@", x);
-}];
-    
-
-```
-
-#### 线程
-
-**ReactiveCocoa** 中的线程操作 包括 `deliverOn` 和 `subscribeOn`这两种，将 *传递的内容* 或 创建信号时 *block中的代码* 切换到指定的线程中执行。
-
-###### deliverOn
-
-- **作用**
-
-	内容传递切换到制定线程中，副作用在原来线程中,把在创建信号时block中的代码称之为副作用。
-- **使用**
-
-	```
-	// 在子线程中执行
-	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        
-        [[[RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-            NSLog(@"%@", [NSThread currentThread]);
-            
-            [subscriber sendNext:@123];
-            
-            [subscriber sendCompleted];
-            
-            return nil;
-        }]
-          deliverOn:[RACScheduler mainThreadScheduler]]
-          
-         subscribeNext:^(id x) {
-         
-             NSLog(@"%@", x);
-             
-             NSLog(@"%@", [NSThread currentThread]);
-         }];
-    });
-    
-    // 输出
-2017-01-04 10:35:55.415 ReactiveCocoa进阶[1183:224535] <NSThread: 0x608000270f00>{number = 3, name = (null)}
-2017-01-04 10:35:55.415 ReactiveCocoa进阶[1183:224482] 123
-2017-01-04 10:35:55.415 ReactiveCocoa进阶[1183:224482] <NSThread: 0x600000079bc0>{number = 1, name = main}
-	```
-	
-	可以看到`副作用`在 *子线程* 中执行，而 `传递的内容` 在 *主线程* 中接收
-
-
-###### subscribeOn
-- **作用**
-
-	**subscribeOn**则是将 `内容传递` 和 `副作用` 都会切换到指定线程中
-- **使用**
-
-	```
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        
-        [[[RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-            NSLog(@"%@", [NSThread currentThread]);
-            
-            [subscriber sendNext:@123];
-            
-            [subscriber sendCompleted];
-            
-            return nil;
-        }]
-          subscribeOn:[RACScheduler mainThreadScheduler]] //传递的内容到主线程中
-         subscribeNext:^(id x) {
-         
-             NSLog(@"%@", x);
-             
-             NSLog(@"%@", [NSThread currentThread]);
-         }];
-    });	
-	//
-2017-01-04 10:44:47.558 ReactiveCocoa进阶[1243:275126] <NSThread: 0x608000077640>{number = 1, name = main}
-2017-01-04 10:44:47.558 ReactiveCocoa进阶[1243:275126] 123
-2017-01-04 10:44:47.558 ReactiveCocoa进阶[1243:275126] <NSThread: 0x608000077640>{number = 1, name = main}
-	```
-	
-	`内容传递` 和 `副作用` 都切换到了 *主线程* 执行
-	
-#### 时间
-
-时间操作就会设置信号超时，定时和延时。
-
-###### interval 定时
-- **作用**
-
-	定时：每隔一段时间发出信号
-	
-	```
-	// 每隔1秒发送信号，指定当前线程执行
-	[[RACSignal interval:1 onScheduler:[RACScheduler currentScheduler]] subscribeNext:^(id x) {
-        
-        NSLog(@"定时:%@", x);
-    }];
-    
-	// 输出
-	2017-01-04 13:48:55.196 ReactiveCocoa进阶[1980:492724] 定时:2017-01-04 05:48:55 +0000
-	2017-01-04 13:48:56.195 ReactiveCocoa进阶[1980:492724] 定时:2017-01-04 05:48:56 +0000
-	2017-01-04 13:48:57.196 ReactiveCocoa进阶[1980:492724] 定时:2017-01-04 05:48:57 +0000
-	```
-
-
-###### timeout 超时
-
-- **作用**
-
-	超时，可以让一个信号在一定的时间后，自动报错。
-	
-	```
-	RACSignal *signal = [[RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-        // 不发送信号，模拟超时状态
-        // [subscriber sendNext:@"hello"];
-        //[subscriber sendCompleted];
-        
-        return nil;
-    }] timeout:1 onScheduler:[RACScheduler currentScheduler]];// 设置1秒超时
-    
-    [signal subscribeNext:^(id x) {
-        
-        NSLog(@"%@", x);
-    } error:^(NSError *error) {
-        
-        NSLog(@"%@", error);
-    }];
-    
-    // 执行代码 1秒后 输出：
-    2017-01-04 13:48:55.195 ReactiveCocoa进阶[1980:492724] Error Domain=RACSignalErrorDomain Code=1 "(null)"
-	```
-
-###### delay 延时
-- **作用**
-
-	延时，延迟一段时间后发送信号
-	
-	```
-	RACSignal *signal2 = [[[RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-        [subscriber sendNext:@"延迟输出"];
-        
-        return nil;
-    }] delay:2] subscribeNext:^(id x) {
-        
-        NSLog(@"%@", x);
-    }];
-    
-    // 执行代码 2秒后 输出
-    2017-01-04 13:55:23.751 ReactiveCocoa进阶[2030:525038] 延迟输出
-	```
-
-
-#### 重复
-
-###### retry
-
-- **作用**
-
-	重试：只要 发送错误 `sendError:`,就会 重新执行 创建信号的Block 直到成功
-	
-	```
-	__block int i = 0;
-    
-    [[[RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-        if (i == 5) {
-            
-            [subscriber sendNext:@"Hello"];
-            
-        } else {
-            
-            // 发送错误
-            NSLog(@"收到错误:%d", i);
-            [subscriber sendError:nil];
-        }
-        
-        i++;
-        
-        return nil;
-        
-    }] retry] subscribeNext:^(id x) {
-        
-        NSLog(@"%@", x);
-        
-    } error:^(NSError *error) {
-        
-        NSLog(@"%@", error);
-        
-    }];
-
-	// 输出
-2017-01-04 14:36:51.594 ReactiveCocoa进阶[2443:667226] 收到错误信息:0
-2017-01-04 14:36:51.595 ReactiveCocoa进阶[2443:667226] 收到错误信息:1
-2017-01-04 14:36:51.595 ReactiveCocoa进阶[2443:667226] 收到错误信息:2
-2017-01-04 14:36:51.596 ReactiveCocoa进阶[2443:667226] 收到错误信息:3
-2017-01-04 14:36:51.596 ReactiveCocoa进阶[2443:667226] 收到错误信息:4
-2017-01-04 14:36:51.596 ReactiveCocoa进阶[2443:667226] Hello
-
-	```
-
-###### replay
-
-- **作用**
-
-	重放：当一个信号被多次订阅,反复播放内容
-	
-	```
-	RACSignal *signal = [[RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-        [subscriber sendNext:@1];
-        [subscriber sendNext:@2];
-        
-        return nil;
-    }] replay];
-    
-    [signal subscribeNext:^(id x) {
-        NSLog(@"%@", x);
-    }];
-    
-    [signal subscribeNext:^(id x) {
-        NSLog(@"%@", x);
-    }];
-    
-    // 输出
-2017-01-04 14:51:01.934 ReactiveCocoa进阶[2544:706740] 1
-2017-01-04 14:51:01.934 ReactiveCocoa进阶[2544:706740] 2
-2017-01-04 14:51:01.934 ReactiveCocoa进阶[2544:706740] 1
-2017-01-04 14:51:01.935 ReactiveCocoa进阶[2544:706740] 2
-	```
-
-
-###### throttle
-
-- **作用**
-
-	节流:当某个信号发送比较频繁时，可以使用节流，在某一段时间不发送信号内容，过了一段时间获取信号的最新内容发出。
-	
-	```
-	RACSubject *subject = [RACSubject subject];
-    
-    // 节流1秒，1秒后接收最后一个发送的信号
-    [[subject throttle:1] subscribeNext:^(id x) {
-        
-        NSLog(@"%@", x);
-    }];
-    
-    [subject sendNext:@1];
-    [subject sendNext:@2];
-    [subject sendNext:@3];
-    
-    // 输出
-    2017-01-04 15:02:37.543 ReactiveCocoa进阶[2731:758193] 3
-	```
-
-# MVVM架构思想
 ---
-程序为什么要有架构？便于程序开发与维护.
 
-#### 常见的架构
-- **MVC**
+### WAL：预写式日志
 
-	M:模型 V:视图 C:控制器
+#### 传统磁盘数据库中的WAL
 
-- **MVVM**
+**中心概念**：数据文件（存储着表和索引）的修改必须在这些动作被日志记录之后才被写入，即在描述这些改变的日志记录被刷到持久存储以后
 
-	M:模型 V:视图+控制器 VM:视图模型
+**运行逻辑**：
 
-- **MVCS**
+* *变更发生时*：先将变更后内容记入WAL Buffer，再将更新后的数据写入Data Buffer。
+* *Commit*：WAL Buffer持久化到磁盘即算提交成功，Data Buffer写磁盘可以在提交之后发生。
+* *Checkpoint*：同步当前Data Buffer中内容到磁盘，确保检查点前的事务已经持久化入磁盘。
 
-	 M:模型 V:视图 C:控制器 C:服务类
+**优势**：
 
-- [**VIPER**](http://www.cocoachina.com/ios/20140703/9016.html)
+* 日志记录体量小于实际数据，持久化速度更快，作为提交标准能提高数据库吞吐率。
+* 将日志记录批量更新到磁盘，顺序读写效率高。（不同于每遇到一次更改就调用IO将日志记录写入磁盘）
 
-	V:视图 I:交互器 P:展示器 E:实体 R:路由
+#### Mypeloton中的WAL
 
-#### MVVM介绍
+**差别**：
 
-- 模型(M):保存视图数据。
+* *变更发生时*：不用在事务操作存入log，而是将变更记录入一个rw_set中。
+* *Commit*：提交前，根据 rw_set 将更改信息写入日志系统，并等待日志记录刷新到硬盘后提交事务。
 
-- 视图+控制器(V):展示内容 + 如何展示
+### Mypeloton日志实现
 
-- 视图模型(VM):处理展示的业务逻辑，包括按钮的点击，数据的请求和解析等等。
+#### 运行逻辑
 
-# 实战一：登录界面
+事务在完成所有操作之后，commit之前，会将变更提交给LogManager进行日志记录。
 
-#### 需求
-1. 监听两个文本框的内容
-2. 有内容登录按键才允许按钮点击
-3. 返回登录结果
+开始记录时，LogManager会为每一个线程单独绑定一个BackendLogger（Thread Local），每个BackendLogger负责将收到的变更信息写入LogBuffer。
 
-#### 分析
-1. 界面的所有业务逻辑都交给控制器做处理
-2. 在MVVM架构中把控制器的业务全部搬去VM模型，也就是每个控制器对应一个VM模型.
+![image.png](https://img-blog.csdnimg.cn/img_convert/5605459258fa8fabf017c91e7aca9961.png)
 
-#### 步骤
-1. 创建LoginViewModel类，处理登录界面业务逻辑.
-2. 这个类里面应该保存着账号的信息，创建一个账号Account模型
-3. LoginViewModel应该保存着账号信息Account模型。
-4. 需要时刻监听Account模型中的账号和密码的改变，怎么监听？
-5. 在非RAC开发中，都是习惯赋值，在RAC开发中，需要改变开发思维，由赋值转变为绑定，可以在一开始初始化的时候，就给Account模型中的属性绑定，并不需要重写set方法。
-6. 每次Account模型的值改变，就需要判断按钮能否点击，在VM模型中做处理，给外界提供一个能否点击按钮的信号.
-7. 这个登录信号需要判断Account中账号和密码是否有值，用KVO监听这两个值的改变，把他们聚合成登录信号.
-8. 监听按钮的点击，由VM处理，应该给VM声明一个RACCommand，专门处理登录业务逻辑.
-9. 执行命令，把数据包装成信号传递出去
-10. 监听命令中信号的数据传递
-11. 监听命令的执行时刻
+LogBuffer分为两个循环队列：available_pool，persist_pool（其中队列节点是128kb的Buffer块）。available_pool用于提供空闲Buffer块，写满了日志信息的Buffer块则装入persist_pool。
 
+FrontendLogger作为一个单独的线程，在后台每隔0.2ms一次循环，每次循环则收集所有LogBuffer的persist_pool中的日志信息，并将其写入磁盘，这个操作称为Flush。
 
+![image.png](https://img-blog.csdnimg.cn/img_convert/a6990d14607a9c2cb2f20e229084c690.png)
 
-#### 运行效果
+而对于每一次事务commit，需要等待其log写入磁盘后才能提交成功，这个等待操作由一对由条件变量实现的函数实现：FrontendLogger每次写完，释放锁；LogManager收到锁后，获取当前已Flush的最大事务id（max_flushed_cid），并根据当前事务的id（current_cid）判断此事务log是否已经Flush，若没有，等待下一次锁的释放。若有，则事务可以完成commit。
 
-![登录界面](https://ww3.sinaimg.cn/large/006y8lVagw1fbgvoh8yu6j30bj0l43yz.jpg)
+#### 具体函数流程
 
-#### 代码
+![image.png](https://img-blog.csdnimg.cn/img_convert/5cfcc117e30edbcb97883b1d62810458.png)
 
-`MyViewController.m`
+**1 初始化**
 
-```
-#import "MyViewController.h"
-#import "LoginViewModel.h"
+1. `TransactionManager`在结束事务所有操作时，进入 `TransactionManager::CommitTransaction()`函数。
+2. `TransactionManager::CommitTransaction()`函数能获取到一个此事务的Insert，Update，Delete操作列表。
+3. `TransactionManager::CommitTransaction()`调用 `LogManager::LogBeginTransaction()`，记录下事务的开始信息。
+4. `LogManager::LogBeginTransaction()` 随即调用 `LogManager::GetBackendLogger()` 获取或者新建 `BackendLogger` 对象，一个线程对应一个单独的 `BackendLogger`。
 
-@interface MyViewController ()
+**2 记录更改**
 
-@property (nonatomic, strong) LoginViewModel *loginViewModel;
+1. `TransactionManager::CommitTransaction()`函数遍历上述操作列表，将该事务所有的Insert，Update，Delete操作通过三个函数传入log信息：
 
-@property (weak, nonatomic) IBOutlet UITextField *accountField;
-
-@property (weak, nonatomic) IBOutlet UITextField *pwdField;
-
-@property (weak, nonatomic) IBOutlet UIButton *loginBtn;
-
-@end
-
-@implementation MyViewController
-
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    
-    [self bindModel];
-    
-}
-
-- (void)didReceiveMemoryWarning {
-    [super didReceiveMemoryWarning];
-    // Dispose of any resources that can be recreated.
-}
-
-
-
-// 视图模型绑定
-- (void)bindModel {
-
-    // 给模型的属性绑定信号
-    //
-    RAC(self.loginViewModel.account, account) = _accountField.rac_textSignal;
-    RAC(self.loginViewModel.account, pwd) = _pwdField.rac_textSignal;
-    
-    RAC(self.loginBtn, enabled) = self.loginViewModel.enableLoginSignal;
-    
-    // 监听登录点击
-    [[_loginBtn rac_signalForControlEvents:UIControlEventTouchUpInside] subscribeNext:^(id x) {
-        
-        [self.loginViewModel.LoginCommand execute:nil];
-    }];
-    
-}
-- (IBAction)btnTap:(id)sender {
-    
-    
-}
-
-#pragma mark - lazyLoad
-
-- (LoginViewModel *)loginViewModel {
-    
-    if (nil == _loginViewModel) {
-        _loginViewModel = [[LoginViewModel alloc] init];
-    }
-    
-    return _loginViewModel;
-}
-```	
-		
-`LoginViewModel.h`
-
-```
-#import <UIKit/UIKit.h>
-
-@interface Account : NSObject
-
-@property (nonatomic, strong) NSString *account;
-@property (nonatomic, strong) NSString *pwd;
-
-@end
-
-
-@interface LoginViewModel : UIViewController
-
-@property (nonatomic, strong) Account *account;
-
-// 是否允许登录的信号
-@property (nonatomic, strong, readonly) RACSignal *enableLoginSignal;
-
-@property (nonatomic, strong, readonly) RACCommand *LoginCommand;
-
-@end
-
+```cpp
+LogManager::LogInsert()
+LogManager::LogDelete()
+LogManager::LogUpdate()
 ```
 
-`LoginViewModel.m`
+2. `BackendLogger` 调用 `BackendLogger::Log()` 将log信息记录入一个特殊的Log Buffer Pool：
 
-```
-#import "LoginViewModel.h"
+```cpp
+buffer // 指pool中一个128kb的单元。
 
-@implementation Account
-
-@end
-
-
-@interface LoginViewModel ()
-
-@end
-
-@implementation LoginViewModel
-
-- (instancetype)init {
-    
-    if (self = [super init]) {
-        [self initialBind];
-    }
-    return self;
-}
-
-- (void)initialBind {
-
-    // 监听账号属性改变， 把他们合成一个信号
-    _enableLoginSignal = [RACSubject combineLatest:@[RACObserve(self.account, account), RACObserve(self.account, pwd)] reduce:^id(NSString *accout, NSString *pwd){
-        
-        return @(accout.length && pwd.length);
-    }];
-    
-    // 处理业务逻辑
-    _LoginCommand = [[RACCommand alloc] initWithSignalBlock:^RACSignal *(id input) {
-        
-        NSLog(@"点击了登录");
-        return [RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-            
-            // 模仿网络延迟
-
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                
-                // 返回登录成功 发送成功信号
-                [subscriber sendNext:@"登录成功"];
-            });
-            
-            return nil;
-        }];
-    }];
-    
-    
-    // 监听登录产生的数据
-    [_LoginCommand.executionSignals.switchToLatest subscribeNext:^(id x) {
-       
-        if ([x isEqualToString:@"登录成功"]) {
-            NSLog(@"登录成功");
-        }
-        
-    }];
-    
-    [[_LoginCommand.executing skip:1] subscribeNext:^(id x) {
-        
-        if ([x isEqualToNumber:@(YES)]) {
-            
-            NSLog(@"正在登陆...");
-        } else {
-            
-        // 登录成功
-        NSLog(@"登陆成功");
-        
-        }
-        
-    }];
-}
-
-#pragma mark - lazyLoad
-
-- (Account *)account
-{
-    if (_account == nil) {
-        _account = [[Account alloc] init];
-    }
-    return _account;
-}
-
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    
-}
-
-@end
-
+// 这两个池都是CircularBufferPool的实例对象
+available_pool // 当前可用的空闲池，将log信息直接放入。
+persist_pool // 当 available_pool 中一个 buffer 满了之后，将其推送至此。
 ```
 
-# 实战二：网络请求数据
+**3 记录入盘**
 
-#### 需求
-1. 请求一段网络数据，将请求到的数据在`tableView`上展示
-2. 该数据为豆瓣图书的搜索返回结果，URL：url:https://api.douban.com/v2/book/search?q=悟空传
+* `FrontendLogger` 通过 `FrontendLogger::MainLoop()`函数定期循环。
+* 每次睡醒后，从 `persist_pool`获取 `buffer`，并将其中的记录写入磁盘。
+* 写入磁盘后，更新 `max_flushed_cid`：目前已经提交了的最大的事务号（是事务号么）。
+* 每一次刷新入磁盘完毕，都会调用 `LogManager::FrontendLoggerFlushed()`函数，告知 `TransactionManager`此次刷新完毕。
 
-#### 分析
-1. 界面的所有业务逻辑都交给**控制器**做处理
-2. 网络请求交给**MV**模型处理
+**4 完成提交**
 
-#### 步骤
+* `TransactionManager::CommitTransaction()`在完成所有操作后，调取 `LogManager::LogCommitTransaction()`，提交Commit记录。
+* 最后， `LogManager::LogCommitTransaction()`则会调取 `LogManager::WaitForFlush(`)函数，等待 `FrontendLogger`将此事务刷新到磁盘。
 
-1. 控制器提供一个视图模型（requesViewModel），处理界面的业务逻辑
-2. VM提供一个命令，处理请求业务逻辑
-3. 在创建命令的block中，会把请求包装成一个信号，等请求成功的时候，就会把数据传递出去。
-4. 请求数据成功，应该把字典转换成模型，保存到视图模型中，控制器想用就直接从视图模型中获取。
+#### 其他事项
 
-#### 其他
+* MyPeloton日志暂时没有 `checkpoint`以及恢复系统。
 
-网络请求与图片缓存用到了[AFNetworking](https://github.com/AFNetworking/AFNetworking) 和 [SDWebImage](https://github.com/rs/SDWebImage),自行在Pods中导入。
+---
 
-```
-platform :ios, '8.0'
+### Mypeloton源码解析
 
-target 'ReactiveCocoa进阶' do
+#### 功能类
 
-use_frameworks!
-pod 'ReactiveCocoa', '~> 2.5'
-pod 'AFNetworking'
-pod 'SDWebImage'
-end
-```
+##### LogManager
 
-#### 运行效果
+整个日志的核心，日志的管理器，以单例模式运行：整个数据库程序中只有一个LogManager实例
 
-![](https://ww3.sinaimg.cn/large/006y8lVagw1fbgw1xnz74j30bj0l4408.jpg)
+![img60.jpg](https://img-blog.csdnimg.cn/img_convert/a147d84c8e55ba399937cce835f17902.png)
 
+**主要成员函数**
 
-#### 代码
+> ***LogBeginTransaction()***
 
-`SearchViewController.m`
-
-```
-#import "SearchViewController.h"
-#import "RequestViewModel.h"
-
-@interface SearchViewController ()<UITableViewDataSource>
-
-@property (nonatomic, strong) UITableView *tableView;
-
-@property (nonatomic, strong) RequestViewModel *requesViewModel;
-
-@end
-
-@implementation SearchViewController
-
-- (RequestViewModel *)requesViewModel
-{
-    if (_requesViewModel == nil) {
-        _requesViewModel = [[RequestViewModel alloc] init];
-    }
-    return _requesViewModel;
-}
-
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    
-    
-    self.tableView = [[UITableView alloc] initWithFrame:self.view.frame];
-    
-    self.tableView.dataSource = self;
-    
-    [self.view addSubview:self.tableView];
-    
-    //
-    RACSignal *requesSiganl = [self.requesViewModel.reuqesCommand execute:nil];
-    
-    [requesSiganl subscribeNext:^(NSArray *x) {
-        
-        self.requesViewModel.models = x;
-        
-        [self.tableView reloadData];
-    }];
-}
-
-- (void)didReceiveMemoryWarning {
-    [super didReceiveMemoryWarning];
-    // Dispose of any resources that can be recreated.
-}
-
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
-{
-    return self.requesViewModel.models.count;
-}
-
-- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
-{
-    static NSString *ID = @"cell";
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:ID];
-    if (cell == nil) {
-        
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:ID];
-    }
-    
-    Book *book = self.requesViewModel.models[indexPath.row];
-    cell.detailTextLabel.text = book.subtitle;
-    cell.textLabel.text = book.title;
-    
-    [cell.imageView sd_setImageWithURL:[NSURL URLWithString:book.image] placeholderImage:[UIImage imageNamed:@"cellImage"]];
-    
-    
-    return cell;
-}
-@end
+```cpp
+void LogBeginTransaction(cid_t commit_id);
 ```
 
-`RequestViewModel.h`
+*变量*： `commit_id`：申请 commit 的对应 transaction 的 id
 
-```
-#import <Foundation/Foundation.h>
+*功能*：TransactionManager在commit事务时，调用此系列函数，进行日志记录。
 
-@interface Book : NSObject
+* 获取对应线程的专属 `BackendLogger`并将record交由其存储入缓冲池
+* 记录的是该事务的信，记录类型：`TransactionRecord`
 
-@property (nonatomic, copy) NSString *subtitle;
-@property (nonatomic, copy) NSString *title;
-@property (nonatomic, copy) NSString *image;
+*同类函数*：其中记录类型有所不同，类型是 `TupleRecord`
 
-@end
-
-@interface RequestViewModel : NSObject
-
-// 请求命令
-@property (nonatomic, strong, readonly) RACCommand *reuqesCommand;
-
-//模型数组
-@property (nonatomic, strong) NSArray *models;
-
-
-@end
+```cpp
+// Insert 和 Update 会记录其修改的tuple, delete不会
+void LogManager::LogUpdate(cid_t commit_id, const ItemPointer &old_version, const ItemPointer &new_version);
+void LogManager::LogInsert(cid_t commit_id, const ItemPointer &new_location);
+void LogManager::LogDelete(cid_t commit_id, const ItemPointer &delete_location);
 ```
 
-`RequestViewModel.m`
+> ***LogCommitTransaction()***
 
-```
-#import "RequestViewModel.h"
-
-@implementation Book
-
-- (instancetype)initWithValue:(NSDictionary *)value {
-    
-    if (self = [super init]) {
-        
-        self.title = value[@"title"];
-        self.subtitle = value[@"subtitle"];
-        self.image = value[@"image"];
-    }
-    return self;
-}
-
-+ (Book *)bookWithDict:(NSDictionary *)value {
-    
-    return [[self alloc] initWithValue:value];
-}
-
-
-
-@end
-
-@implementation RequestViewModel
-
-- (instancetype)init
-{
-    if (self = [super init]) {
-        
-        [self initialBind];
-    }
-    return self;
-}
-
-
-- (void)initialBind
-{
-    _reuqesCommand = [[RACCommand alloc] initWithSignalBlock:^RACSignal *(id input) {
-        
-      RACSignal *requestSiganl = [RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-          
-          NSMutableDictionary *parameters = [NSMutableDictionary dictionary];
-          parameters[@"q"] = @"悟空传";
-          
-          //
-          [[AFHTTPSessionManager manager] GET:@"https://api.douban.com/v2/book/search" parameters:parameters progress:^(NSProgress * _Nonnull downloadProgress) {
-              
-              NSLog(@"downloadProgress: %@", downloadProgress);
-          } success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
-              
-              // 数据请求成功就讲数据发送出去
-              NSLog(@"responseObject:%@", responseObject);
-              
-              [subscriber sendNext:responseObject];
-              
-              [subscriber sendCompleted];
-              
-          } failure:^(NSURLSessionDataTask * _Nullable task, NSError * _Nonnull error) {
-              
-              NSLog(@"error: %@", error);
-          }];
-          
-          
-         return nil;
-      }];
-        
-        // 在返回数据信号时，把数据中的字典映射成模型信号，传递出去
-        return [requestSiganl map:^id(NSDictionary *value) {
-            
-            NSMutableArray *dictArr = value[@"books"];
-            
-            NSArray *modelArr = [[dictArr.rac_sequence map:^id(id value) {
-                
-                return [Book bookWithDict:value];
-                
-            }] array];
-            
-            return modelArr;
-            
-        }];
-        
-    }];
-}
-
-
-@end
-
+```cpp
+void LogManager::LogCommitTransaction(cid_t commit_id);
 ```
 
->最后附上GitHub：<https://github.com/qiubaiying/ReactiveCocoa_Demo>
+*功能*：标记此事务的日志记录完成，注意：调用此函数的TransactionManager在此函数结束后，才会标记事务状态为提交状态。
+
+* 此函数结束前，会使用 `WaitForFlush()`确保当前cid对应的记录已经刷新到磁盘。
+
+> ***GetBackendLogger()***
+
+```cpp
+BackendLogger *GetBackendLogger(unsigned int hint_idx);
+```
+
+变量：`hint_idx`：在 `LoggerMappingStrategyType == MANUAL`的时候有用
+
+功能：获取或者新建 `BakendLogger`实例，并将其绑定到 `FrontendLogger`
+
+* 如果 `LogManager::backend_logger`不为空，则返回。
+* 如果为空，则构建一个新的 `BakendLogger`并指向它，将其根据Maping策略放置到指定的 `frontend_logger`内。
+
+附加：（Mapping 策略枚举类）
+
+```cpp
+enum class LoggerMappingStrategyType {
+  INVALID = INVALID_TYPE_ID,
+  ROUND_ROBIN = 1, // 轮询方式
+  AFFINITY = 2,
+  MANUAL = 3 // 根据传入的hint_idx选择
+};
+```
+
+> ***FrontendLoggerFlushed()***
+> 
+> ***WaitForFlush()***
+
+```cpp
+void LogManager::FrontendLoggerFlushed()
+void LogManager::WaitForFlush(cid_t cid)
+```
+
+*功能*：结合使用，用于保证事务的提交是按次序的。
+
+前者在 `FrontendLogger`中使用，将日志缓存池中内容刷新到磁盘后使用。
+
+后者在 `LogManager::LogCommitTransaction()`中使用，判断当前 `transaction`对应的日志是否已经刷新到磁盘（`cid `<= `PersistentFlushedCommitId`）
+
+> ***GetPersistentFlushedCommitId()***
+
+```cpp
+cid_t GetPersistentFlushedCommitId();
+```
+
+功能：找到 `PersistentFlushedCommitId`：当前已经刷新到磁盘的最大cid。
+
+* 当只有一个 `FrontendLogger`时，是已经刷新到磁盘的最大cid
+* 当有多个 `FrontendLogger`时，是所有 `FrontendLogger`中获取到的 `max_flushed_cid`中的最小值（为了确保比此 `cid`小的 `transaction`都已经刷新到磁盘）
+
+> ***StartStandbyMode()***
+
+```cpp
+void StartStandbyMode();
+```
+
+*功能*：为 `FrontendLogger`创建单独的线程，并调用 `FrontendLogger:MainLoop`让其进入待命模式，当模式转变为Logging模式时，其会进行刷盘。
+
+**主要成员变量**
+
+> ***frontend_loggers***
+
+```cpp
+// There is only one frontend_logger of some type
+// either write ahead or write behind logging
+std::vector<std::unique_ptr<FrontendLogger>> frontend_loggers;
+```
+
+`FronTedLogger`实例数量，Mypeloton中只有一个实例（线程）。
+
+> ***backend_logger***
+
+```cpp
+// Each thread gets a backend logger
+thread_local static BackendLogger *backend_logger = nullptr;
+```
+
+这个不能算是成员变量，没有声明在类内。这个变量确保了每一个线程独有一个 `BackendLogger`实例
+
+#### 日志记录类
+
+##### LogRecord
+
+所有记录的父类，没有特殊用法
+
+有两个重要的函数和对应的成员变量，会在其子类中进行使用和初始化。供给BakendLogger持久化使用。
+
+```cpp
+// serialized message
+char *message = nullptr;
+char *GetMessage(void) const { return message; }
+
+// length of the message
+size_t message_length = 0; 
+size_t GetMessageLength(void) const { return message_length; }
+```
+
+##### TupleRecord
+
+```cpp
+class TupleRecord : public LogRecord, Printable {
+```
+
+tuple类型的记录。有Insert，Update，Delete 三种类型，在存储时将记录序列化，并传入 `BakendLogger`用于存储。
+
+**记录内容：**
+
+* 头部
+
+```cpp
+long(log_record_type)
+int(header_size) // 记录头部的长度
+long(db_oid)
+long(table_oid)
+long(cid)
+long(insert_location.block) // 只有Insert类型的该数据是有效数据
+long(insert_location.offset) // 只有Insert类型的该数据是有效数据
+long(delete_location.block) // 只有Delete类型的该数据是有效数据
+long(delete_location.offset) // 只有Delete类型的该数据是有效数据
+```
+
+* 内容
+
+```cpp
+// 只有Insert 和 Update 记录需要存入tuple
+Serialized(Tuple)
+```
+
+![img30.jpg](https://img-blog.csdnimg.cn/img_convert/8e9b80519add876009cb2a1d719cf1f9.png)
+
+**主要成员函数**
+
+> ***Serialize()***
+
+```cpp
+bool Serialize(CopySerializeOutput &output);
+```
+
+参数：一个帮助序列化且暂存信息的类
+
+功能：将记录序列化并装入数组中（`message`成员变量），在BakendLogger中被获取并装入LogBuffer。
+
+* 其中头部的序列化是调用 `SerializeHeader()`函数完成。
+* 只有Update类型的record记录了tuple的数据（实际上Insert类型也需要记录，但代码逻辑中并没有实现）
+
+**主要成员变量**
+
+> ***message***
+> 
+> ***message_length***
+
+```cpp
+// serialized message
+  char *message = nullptr;
+
+  // length of the message
+  size_t message_length = 0;
+```
+
+父类中声明的变量，用于存储序列化之后的数据，用于存入Log。
+
+---
+
+##### TransactionRecord
+
+```cpp
+class TransactionRecord : public LogRecord, Printable {
+```
+
+事务记录，只有在 `LogManager::LogBeginTransaction()`和 `LogManager::LogCommitTransaction()`中构造此类型的记录，也就事务开始log和结束log的时候使用。
+
+**记录内容：**（相当于只有头部）
+
+```cpp
+long(log_record_type)
+int(header_size) // 记录头部的长度
+long(cid)
+```
+
+**主要成员函数和变量同TupleRecord大同小异，不做赘述。**
+
+---
+
+#### 内存池类
+
+##### LogBuffer
+
+日志缓存池（`CircularBufferPool`）的一个单位，大小为128KB。
+
+实例化后，被 `BakendLogger`获取，用于装入日志记录。
+
+![img69.jpg](https://img-blog.csdnimg.cn/img_convert/410e9e11fc0a8bfb04fba029ae03e0ee.png)
+
+**主要成员函数**
+
+> *GetData()*
+
+```cpp
+char *GetData() { return elastic_data_.get(); }
+```
+
+获取数据时只能获取序列化后存储的整块内存，没有提供  `De-serialized`功能。
+
+> *WriteRecord()*
+
+```cpp
+bool WriteRecord(LogRecord *);
+```
+
+写入数据时同样传入序列化记录，依次排列在空闲内存后。
+
+当此buffer满了，返回 `false`，`Log()`函数会尝试重新获取一个空闲的buffer。
+
+**主要成员变量**
+
+```cpp
+size_t size_;
+size_t capacity_;
+```
+
+最大容量，根据构造函数得出最大容量大小为128KB
+
+```cpp
+std::unique_ptr<char[]> elastic_data_;
+```
+
+存储log数据的数组，大小跟 `capacity_`相同
+
+注意，这个 `capacity_`可能会变化：在写入第一条数据时，此数据就大于 `capacity_`，会将其乘2。
+
+```cpp
+cid_t max_log_id;
+```
+
+目前已经写入了的最大的 transaction 的 id ，在 `BakendLoger::Log()`中通过调用 `LogBuffer::SetMaxLogId()`对其进行设置。
+
+---
+
+##### BufferPool
+
+日志缓存池的抽象父类，没有特殊作用
+
+---
+
+##### CircularBufferPool
+
+```
+class CircularBufferPool : public BufferPool {
+```
+
+日志缓存池的实现，在 `BackendLogger`中会实例化为 `BackendLogger::available_buffer_pool_`和 `BackendLogger::persist_buffer_pool_`，用于缓存日志记录。
+
+可看作是 `LogBuffer`组成的循环队列，从尾部获取空闲buffer，头部装入满buffer，读写/序列化的细节不由缓存池提供。
+
+![img70.jpg](https://img-blog.csdnimg.cn/img_convert/f3cec88161d9e0ee14f566d3c8c99f72.png)
+
+**主要成员函数**
+
+```cpp
+// put a buffer to buffer pool. blocks if over capacity
+bool Put(std::unique_ptr<LogBuffer>);
+
+// get a buffer from buffer pool. blocks if none available
+std::unique_ptr<LogBuffer> Get();
+```
+
+这两个函数相当于队列的出队，入队。
+
+**主要成员变量**
+
+```cpp
+std::unique_ptr<LogBuffer> buffers_[BUFFER_POOL_SIZE];
+std::atomic<unsigned int> head_;
+std::atomic<unsigned int> tail_;
+```
+
+#### 日志器类
+
+##### Logger
+
+日志类型的抽象父类，没有特殊作用
+
+五种日志模式：
+
+```cpp
+// 1. Standby -- Bootstrap
+// 2. Recovery -- Optional
+// 3. Logging -- Collect data and flush when commit
+// 4. Terminate -- Collect any remaining data and flush
+// 5. Sleep -- Disconnect backend loggers and frontend logger from manager
+```
+
+---
+
+##### BackendLogger
+
+用于记录日志记录，将记录写入内存中的log_buffer_pool。
+
+```cpp
+class BackendLogger : public Logger {
+  friend class FrontendLogger;
+```
+
+![img37.jpg](https://img-blog.csdnimg.cn/img_convert/ecefe5ef11db440d918796b33a189e7c.png)
+
+**主要成员函数**
+
+> ***Log()***
+
+```cpp
+void Log(LogRecord *record);
+```
+
+*参数*： `record`：封装好的日志记录类
+
+*功能：* 将日志记录写道内存缓存池中。
+
+* 从 `available_buffer_pool_`获取一个空闲 `log_buffer_`，将传入的日志记录写入 `log_buffer_`，如果此buffer满了，则将其推送到 `persist_buffer_pool_`中。
+* 如果是commit类型的record，要求其cid（txn_id）必须大于目前已提交记录的最大cid。
+* 将目前最大的cid更新入 `log_buffer_`，FrontedLogger将用于计算 `max_flushed_cid`的值。
+
+> ***GetBackendLogger()***
+
+```cpp
+static BackendLogger GetBackendLogger(LoggingType logging_type);
+```
+
+*参数*： `logging_type`：目前只实现了WAL（向前写日志）
+
+*功能*：返回一个新的  `WriteAheadBackendLogger` 实例（此类公共继承了 `BackendLogger`，拥有其所有公用函数）
+
+> ***PrepareLogBuffers()***
+
+```cpp
+std::pair<cid_t, cid_t> PrepareLogBuffers();
+```
+
+*功能*：将 `persist_buffer_pool_`中的内容推送到 `local_queue`内，`FrontedLogger`会从中获取，用于刷新到磁盘。
+
+* 如果 `log_buffer_`不为空，则将其的内容也附加到 `local_queue`内。
+
+*返回*：返回一对commit_id，第一个是记录器可以提交的值的下界，第二个是这个Logger已经提交过的的最大cid
+
+> ***GetLogBuffers()***
+
+```cpp
+std::vector<std::unique_ptr<LogBuffer>> &GetLogBuffers() { return local_queue; }
+```
+
+*功能*：供给 `FrontedLogger`获取准备好的日志记录。
+
+> ***GrantEmptyBuffer()***
+
+```cpp
+void GrantEmptyBuffer(std::unique_ptr<LogBuffer> empty_buffer)
+```
+
+*功能*：`FrontedLogger`通过此函数给 `available_buffer_pool_`传入新的LogBuffer页。
+
+**主要成员变量**
+
+> ***log_buffer_***
+
+```cpp
+std::unique_ptr<LogBuffer> log_buffer_;
+```
+
+指向当前 `LogBuffer`的指针，用于在 `Log()`函数中装入信息。
+
+> ***available_buffer_pool_***
+
+> ***persist_buffer_pool_***
+
+```cpp
+std::unique_ptr<BufferPool> available_buffer_pool_;
+std::unique_ptr<BufferPool> persist_buffer_pool_;
+```
+
+`available_buffer_pool_`：当前可用的空闲池，`Log()`从其中获取空闲的 `LogBuffer`单位（用上述的 `log_buffer_`指向此单位）
+`persist_buffer_pool_`： 当 `log_buffer_`满了之后，将其推送至此。
+
+注意：新写入的log记录，要被推送入了 `persist_buffer_pool_`，要么还留在 `log_buffer_`，`available_buffer_pool_`中永远是空闲的LogBuffer队列，不会写入内容。
+
+> ***local_queue***
+
+```cpp
+// temporary local_queue used by backend
+std::vector<std::unique_ptr<LogBuffer>> local_queue;
+```
+
+调用 `PrepareLogBuffers()`时将 `persist_buffer_pool_`中的内容推送至此，`FrontendLogger`通过 `BakendLogger::GetLogBuffers()`获取其中的内容用于刷新到磁盘。
+
+> ***highest_logged_commit_message***
+
+```cpp
+cid_t highest_logged_commit_message;
+```
+
+在Log()中被更新，存储了目前记录过的**已经提交过的**最大transaction_id即commit_id。
+
+* 在 `PrepareLogBuffers()`中被使用，是构建返回值的变量之一，返回给 `FrontendLogger`使用。
+
+---
+
+##### FrontendLogger
+
+单独作为一个线程，设定好固定休眠时间间隔，每次醒来 ，将log_buffer_pool中的日志记录flush到磁盘。
+
+```cpp
+class FrontendLogger : public Logger {
+```
+
+![img50.jpg](https://img-blog.csdnimg.cn/img_convert/e6178a8bd07d5eb09d5498efc41b7e9a.png)
+
+**主要成员函数**
+
+> ***MainLoop()   🚀️***
+
+```cpp
+void MainLoop(void)
+```
+
+*功能*：让FrontendLogger进入循环模式，设定好固定休眠时间间隔，每次醒来将log_buffer_pool中的日志记录flush到磁盘。
+
+> ***CollectLogRecordsFromBackendLoggers()***
+
+```cp
+void CollectLogRecordsFromBackendLoggers(void);
+```
+
+*功能*：将所有BackendLogger中的 `persist_buffer_pool_`中的内容通过 `BackendLogger::PrepareLogBuffers()`收集起来。
+
+**主要成员变量**
+
+> ***wait_timeout***
+
+```
+int wait_timeout;
+```
+
+每次 `CollectLogRecordsFromBackendLoggers()`需要等待的时间（默认为0）
+
+> ***max_seen_commit_id***
+> 
+> ***max_collected_commit_id***
+
+```cpp
+cid_t max_seen_commit_id;
+cid_t max_collected_commit_id;
+```
+
+在只有单个FrontendLogger的情况下，这两个值的大小相等，都等于：目前FrontendLogger收集到的最大的已经提交了的commit_id，即从BackendLogger中获取的 `highest_logged_commit_message`。（之所以强调收集到的，是因为BakendLogger是单独的线程， `highest_logged_commit_message`随时可能更新）
+
+> ***max_flushed_commit_id***
+
+```
+cid_t max_flushed_commit_id;
+```
+
+每次将缓冲区内容刷新到磁盘后，将此变量更新为 `max_seen_commit_id`。
+
+##### WriteAheadFrontendLogger
+
+![img55.jpg](https://img-blog.csdnimg.cn/img_convert/5243144a8d507aa31d3edb58f74f111b.png)
+
+> ***FlushLogRecords()***
+
+```cpp
+void FlushLogRecords(void)
+```
+
+*功能*：将日志缓存池内的数据全部刷新到硬盘上。缓存池的内容是从BakendLogger中的 `persist_buffer_pool_`中取得。
+
+##### WriteAheadBackendLogger
+
+`BackendLogger` 的子类，无特殊用法，BakendLogger实例化时用的是此子类。
+
+只封装了两个构造Tuple的函数，其中作用只是在日志记录类型上加上WAL标记。
