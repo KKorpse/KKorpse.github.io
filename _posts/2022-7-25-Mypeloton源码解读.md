@@ -3,8 +3,8 @@ layout:     post
 title:      Mypeloton 源码解析：日志部分
 subtitle:   Mypeloton 日志部分的原理分析，关键代码解析
 date:       2022-7-27
-author:     BY
-header-img: img/post-bg-os-metro.jpg
+author:     korpse
+header-img: img/post-bg-rwd.jpg
 catalog: true
 tags:
     - 内存数据库
